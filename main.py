@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="PPTX Translator",
     description="Translate PowerPoint presentations while preserving formatting",
-    version="2.1.0"
+    version="2.2.0"
 )
 
 # Add CORS middleware
@@ -83,7 +83,7 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint for Render."""
-    return {"status": "healthy", "service": "pptx-translator", "version": "2.1.0"}
+    return {"status": "healthy", "service": "pptx-translator", "version": "2.2.0"}
 
 
 @app.get("/api/test")
@@ -396,6 +396,7 @@ def get_html_page():
         @keyframes spin { to { transform: rotate(360deg); } }
         
         .progress-text { color: #666; }
+        .progress-detail { color: #999; font-size: 12px; margin-top: 5px; }
         
         .error {
             background: #fee; border: 1px solid #fcc; color: #c00;
@@ -444,7 +445,8 @@ def get_html_page():
         
         <div class="progress" id="progress">
             <div class="spinner"></div>
-            <div class="progress-text">Translating... This may take a minute.</div>
+            <div class="progress-text" id="progress-text">Translating... This may take a minute.</div>
+            <div class="progress-detail" id="progress-detail"></div>
         </div>
         
         <div class="error" id="error"></div>
@@ -517,16 +519,39 @@ def get_html_page():
             progress.classList.add('active');
             errorDiv.classList.remove('active');
             
+            // Update progress message based on file size
+            const sizeMB = selectedFile.size / 1024 / 1024;
+            const progressText = document.getElementById('progress-text');
+            const progressDetail = document.getElementById('progress-detail');
+            
+            if (sizeMB > 10) {
+                progressText.textContent = 'Translating large file... Please wait up to 3-5 minutes.';
+                progressDetail.textContent = `Processing ${sizeMB.toFixed(1)} MB with many slides takes time.`;
+            } else if (sizeMB > 5) {
+                progressText.textContent = 'Translating... This may take 1-2 minutes.';
+                progressDetail.textContent = '';
+            } else {
+                progressText.textContent = 'Translating... This may take a minute.';
+                progressDetail.textContent = '';
+            }
+            
             const formData = new FormData();
             formData.append('file', selectedFile);
             formData.append('language', languageSelect.value);
             formData.append('use_deepl', 'true');
             
+            // Use AbortController for timeout (5 min for large files)
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 300000);
+            
             try {
                 const response = await fetch('/api/translate', {
                     method: 'POST',
-                    body: formData
+                    body: formData,
+                    signal: controller.signal
                 });
+                
+                clearTimeout(timeoutId);
                 
                 // Check content type to determine response type
                 const contentType = response.headers.get('content-type') || '';
@@ -574,9 +599,15 @@ def get_html_page():
                 translateBtn.disabled = false;
                 
             } catch (err) {
+                clearTimeout(timeoutId);
                 progress.classList.remove('active');
                 translateBtn.disabled = false;
-                showError(err.message || 'An unexpected error occurred');
+                
+                if (err.name === 'AbortError') {
+                    showError('Request timed out. The file may be too large. Try a smaller presentation or wait a moment and retry.');
+                } else {
+                    showError(err.message || 'An unexpected error occurred');
+                }
             }
         });
     </script>
