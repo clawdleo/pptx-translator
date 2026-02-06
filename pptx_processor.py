@@ -60,20 +60,38 @@ class PPTXProcessor:
         Returns:
             Dictionary with processing statistics
         """
+        import traceback
+        
         try:
             # Load the presentation
+            logger.info(f"Loading presentation from {input_path}")
+            print(f"Loading: {input_path}")
             prs = Presentation(input_path)
-            logger.info(f"Loaded presentation with {len(prs.slides)} slides")
+            num_slides = len(prs.slides)
+            logger.info(f"Loaded presentation with {num_slides} slides")
+            print(f"Loaded {num_slides} slides")
             
             # Process each slide
             for slide_idx, slide in enumerate(prs.slides):
-                logger.info(f"Processing slide {slide_idx + 1}/{len(prs.slides)}")
-                self._process_slide(slide)
-                self.stats['slides_processed'] += 1
+                try:
+                    logger.info(f"Processing slide {slide_idx + 1}/{num_slides}")
+                    print(f"Processing slide {slide_idx + 1}/{num_slides}")
+                    self._process_slide(slide)
+                    self.stats['slides_processed'] += 1
+                except Exception as e:
+                    error_msg = f"Error on slide {slide_idx + 1}: {e}"
+                    logger.error(error_msg)
+                    print(error_msg)
+                    print(traceback.format_exc())
+                    self.stats['errors'].append(error_msg)
+                    # Continue with next slide instead of failing completely
             
             # Save the translated presentation
+            logger.info(f"Saving translated presentation to {output_path}")
+            print(f"Saving: {output_path}")
             prs.save(output_path)
-            logger.info(f"Saved translated presentation to {output_path}")
+            logger.info("Save complete")
+            print("Save complete")
             
             # Add translator stats
             self.stats['translator_stats'] = self.translator.get_stats()
@@ -82,6 +100,8 @@ class PPTXProcessor:
             
         except Exception as e:
             logger.error(f"Error processing file: {e}")
+            print(f"CRITICAL ERROR: {e}")
+            print(traceback.format_exc())
             self.stats['errors'].append(str(e))
             raise
     

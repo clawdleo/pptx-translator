@@ -95,12 +95,15 @@ class Translator:
         Translate using DeepL API with retry logic.
         """
         import httpx
+        import traceback
         
         # DeepL uses uppercase language codes
         deepl_lang = self.target_lang.upper()
         
         for attempt in range(max_retries):
             try:
+                logger.debug(f"DeepL attempt {attempt + 1}: translating {len(text)} chars to {deepl_lang}")
+                
                 response = httpx.post(
                     'https://api-free.deepl.com/v2/translate',
                     headers={
@@ -117,15 +120,32 @@ class Translator:
                 if response.status_code == 200:
                     data = response.json()
                     if data.get('translations'):
-                        return data['translations'][0]['text']
+                        translated = data['translations'][0]['text']
+                        logger.debug(f"DeepL success: '{text[:30]}...' -> '{translated[:30]}...'")
+                        return translated
+                    else:
+                        logger.warning(f"DeepL returned empty translations: {data}")
+                elif response.status_code == 429:
+                    logger.warning("DeepL rate limited, waiting...")
+                    time.sleep(5)
+                elif response.status_code == 456:
+                    logger.error("DeepL quota exceeded")
+                    return None
                 else:
-                    logger.warning(f"DeepL returned status {response.status_code}")
+                    logger.warning(f"DeepL returned status {response.status_code}: {response.text[:200]}")
                     
+            except httpx.TimeoutException:
+                logger.warning(f"DeepL timeout on attempt {attempt + 1}")
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
             except Exception as e:
-                logger.warning(f"DeepL attempt {attempt + 1} failed: {e}")
+                logger.error(f"DeepL attempt {attempt + 1} failed: {e}")
+                print(f"DeepL error: {e}")
+                print(traceback.format_exc())
                 if attempt < max_retries - 1:
                     time.sleep(2 ** attempt)
         
+        logger.error(f"All DeepL attempts failed for text: {text[:50]}...")
         return None
     
     def get_stats(self) -> dict:

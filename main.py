@@ -2,30 +2,27 @@
 PPTX Translator API
 -------------------
 FastAPI application for translating PowerPoint presentations.
-
-Endpoints:
-- GET /: Serve the web interface
-- POST /api/translate: Upload and translate a PPTX file
-- GET /health: Health check endpoint
+Includes aggressive error handling and logging for debugging.
 """
 
 import os
 import uuid
 import shutil
 import logging
+import traceback
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 from translator import Translator
 from pptx_processor import PPTXProcessor
 
-# Configure logging
+# Configure logging - verbose for debugging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -34,34 +31,59 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="PPTX Translator",
     description="Translate PowerPoint presentations while preserving formatting",
-    version="2.0.0"
+    version="2.1.0"
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Temporary directory for file processing
 TEMP_DIR = Path("/tmp/pptx-translator")
 TEMP_DIR.mkdir(exist_ok=True)
 
-# DeepL API key (optional, loaded from environment)
+# DeepL API key
 DEEPL_API_KEY = os.environ.get('DEEPL_API_KEY', 'e87352a7-9518-4019-bb38-73f09eb2581b:fx')
 
 # Supported languages
 SUPPORTED_LANGUAGES = ['slovenian', 'croatian', 'serbian', 'english', 'german', 'french', 'spanish', 'italian']
 
 
+# Global exception handler
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch all unhandled exceptions and return proper JSON."""
+    error_msg = str(exc)
+    logger.error(f"Unhandled exception: {error_msg}")
+    logger.error(traceback.format_exc())
+    print(f"CRITICAL ERROR: {error_msg}")
+    print(traceback.format_exc())
+    return JSONResponse(
+        status_code=500,
+        content={"error": error_msg, "detail": "An unexpected error occurred. Check server logs."}
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 async def root():
     """Serve the web interface."""
-    return get_html_page()
+    try:
+        return get_html_page()
+    except Exception as e:
+        logger.error(f"Error serving HTML: {e}")
+        print(traceback.format_exc())
+        return HTMLResponse(content=f"<h1>Error: {e}</h1>", status_code=500)
 
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint for Render."""
-    return {
-        "status": "healthy",
-        "service": "pptx-translator",
-        "version": "2.0.0"
-    }
+    return {"status": "healthy", "service": "pptx-translator", "version": "2.1.0"}
 
 
 @app.post("/api/translate")
@@ -71,88 +93,138 @@ async def translate_pptx(
     use_deepl: bool = Form(default=True)
 ):
     """
-    Translate a PowerPoint file.
-    
-    Args:
-        file: The .pptx file to translate
-        language: Target language (slovenian, croatian, serbian, etc.)
-        use_deepl: Whether to use DeepL API (True) or googletrans (False)
-    
-    Returns:
-        The translated .pptx file as a download
+    Translate a PowerPoint file with comprehensive error handling.
     """
-    # Validate file type
-    if not file.filename.lower().endswith('.pptx'):
-        raise HTTPException(
-            status_code=400,
-            detail="Only .pptx files are supported"
-        )
-    
-    # Validate language
-    if language.lower() not in SUPPORTED_LANGUAGES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Language must be one of: {', '.join(SUPPORTED_LANGUAGES)}"
-        )
-    
-    # Generate unique file paths
-    job_id = str(uuid.uuid4())[:8]
-    input_path = TEMP_DIR / f"{job_id}_input.pptx"
-    output_path = TEMP_DIR / f"{job_id}_output.pptx"
+    input_path = None
+    output_path = None
     
     try:
+        logger.info(f"=== NEW TRANSLATION REQUEST ===")
+        logger.info(f"File: {file.filename}, Language: {language}")
+        print(f"Processing: {file.filename} -> {language}")
+        
+        # Validate file type
+        if not file.filename:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "No filename provided"}
+            )
+        
+        if not file.filename.lower().endswith('.pptx'):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Only .pptx files are supported"}
+            )
+        
+        # Validate language
+        lang_lower = language.lower()
+        if lang_lower not in SUPPORTED_LANGUAGES:
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Language must be one of: {', '.join(SUPPORTED_LANGUAGES)}"}
+            )
+        
+        # Generate unique file paths
+        job_id = str(uuid.uuid4())[:8]
+        input_path = TEMP_DIR / f"{job_id}_input.pptx"
+        output_path = TEMP_DIR / f"{job_id}_output.pptx"
+        
+        logger.info(f"Job ID: {job_id}")
+        
         # Save uploaded file
-        logger.info(f"Processing file: {file.filename} -> {language}")
-        with open(input_path, "wb") as f:
-            shutil.copyfileobj(file.file, f)
+        try:
+            with open(input_path, "wb") as f:
+                content = await file.read()
+                f.write(content)
+            logger.info(f"Saved input file: {input_path} ({len(content)} bytes)")
+            print(f"Saved: {input_path} ({len(content)} bytes)")
+        except Exception as e:
+            logger.error(f"Failed to save uploaded file: {e}")
+            print(traceback.format_exc())
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"Failed to save uploaded file: {str(e)}"}
+            )
         
         # Initialize translator
-        deepl_key = DEEPL_API_KEY if use_deepl else None
-        translator = Translator(target_lang=language, deepl_api_key=deepl_key)
+        try:
+            logger.info(f"Initializing translator with DeepL API")
+            translator = Translator(target_lang=lang_lower, deepl_api_key=DEEPL_API_KEY)
+            logger.info("Translator initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize translator: {e}")
+            print(traceback.format_exc())
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"Failed to initialize translation service: {str(e)}"}
+            )
         
         # Process the file
-        processor = PPTXProcessor(translator)
-        stats = processor.process_file(str(input_path), str(output_path))
+        try:
+            logger.info("Starting PPTX processing...")
+            print("Starting PPTX processing...")
+            processor = PPTXProcessor(translator)
+            stats = processor.process_file(str(input_path), str(output_path))
+            logger.info(f"Processing complete: {stats}")
+            print(f"Processing complete: {stats}")
+        except Exception as e:
+            logger.error(f"Failed to process PPTX: {e}")
+            print(f"PPTX PROCESSING ERROR: {e}")
+            print(traceback.format_exc())
+            
+            # Check for specific translation errors
+            error_msg = str(e).lower()
+            if 'nonetype' in error_msg or 'group' in error_msg:
+                return JSONResponse(
+                    status_code=500,
+                    content={"error": "Translation service failed. Please try again later or use a smaller file."}
+                )
+            
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"Failed to process presentation: {str(e)}"}
+            )
         
-        logger.info(f"Translation complete: {stats}")
+        # Verify output file exists
+        if not output_path.exists():
+            logger.error("Output file was not created")
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Translation completed but output file was not created"}
+            )
         
         # Generate output filename
         original_name = Path(file.filename).stem
         output_filename = f"{original_name}_{language}.pptx"
         
+        logger.info(f"Returning translated file: {output_filename}")
+        print(f"Success! Returning: {output_filename}")
+        
         # Return the translated file
         return FileResponse(
-            path=output_path,
+            path=str(output_path),
             filename=output_filename,
-            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            background=cleanup_task(input_path, output_path)
+            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation"
         )
         
     except Exception as e:
-        logger.error(f"Translation failed: {e}")
-        # Cleanup on error
-        cleanup_files(input_path, output_path)
-        raise HTTPException(
+        # Catch-all for any unexpected errors
+        logger.error(f"UNEXPECTED ERROR in translate_pptx: {e}")
+        print(f"UNEXPECTED ERROR: {e}")
+        print(traceback.format_exc())
+        return JSONResponse(
             status_code=500,
-            detail=f"Translation failed: {str(e)}"
+            content={"error": f"Unexpected error: {str(e)}"}
         )
-
-
-def cleanup_files(*paths):
-    """Remove temporary files."""
-    for path in paths:
+    
+    finally:
+        # Cleanup input file (output file will be cleaned up after response)
         try:
-            if path.exists():
-                path.unlink()
+            if input_path and input_path.exists():
+                input_path.unlink()
+                logger.debug(f"Cleaned up input file: {input_path}")
         except Exception as e:
-            logger.warning(f"Failed to cleanup {path}: {e}")
-
-
-async def cleanup_task(input_path, output_path):
-    """Background task to cleanup files after response is sent."""
-    import asyncio
-    await asyncio.sleep(60)  # Wait 60 seconds before cleanup
-    cleanup_files(input_path, output_path)
+            logger.warning(f"Failed to cleanup input file: {e}")
 
 
 def get_html_page():
@@ -269,7 +341,7 @@ def get_html_page():
         .error {
             background: #fee; border: 1px solid #fcc; color: #c00;
             padding: 15px; border-radius: 10px; margin-top: 20px;
-            display: none;
+            display: none; word-break: break-word;
         }
         .error.active { display: block; }
         
@@ -335,7 +407,7 @@ def get_html_page():
         const fileName = document.getElementById('file-name');
         const translateBtn = document.getElementById('translate-btn');
         const progress = document.getElementById('progress');
-        const error = document.getElementById('error');
+        const errorDiv = document.getElementById('error');
         const languageSelect = document.getElementById('language');
         
         let selectedFile = null;
@@ -368,15 +440,15 @@ def get_html_page():
         
         function handleFile(file) {
             selectedFile = file;
-            fileName.textContent = file.name;
+            fileName.textContent = file.name + ' (' + (file.size / 1024 / 1024).toFixed(2) + ' MB)';
             uploadArea.classList.add('has-file');
             translateBtn.disabled = false;
-            error.classList.remove('active');
+            errorDiv.classList.remove('active');
         }
         
         function showError(message) {
-            error.textContent = message;
-            error.classList.add('active');
+            errorDiv.textContent = message;
+            errorDiv.classList.add('active');
         }
         
         translateBtn.addEventListener('click', async () => {
@@ -384,7 +456,7 @@ def get_html_page():
             
             translateBtn.disabled = true;
             progress.classList.add('active');
-            error.classList.remove('active');
+            errorDiv.classList.remove('active');
             
             const formData = new FormData();
             formData.append('file', selectedFile);
@@ -397,16 +469,43 @@ def get_html_page():
                     body: formData
                 });
                 
+                // Check content type to determine response type
+                const contentType = response.headers.get('content-type') || '';
+                
                 if (!response.ok) {
-                    const err = await response.json();
-                    throw new Error(err.detail || 'Translation failed');
+                    // Try to parse error as JSON
+                    let errorMsg = 'Translation failed';
+                    try {
+                        if (contentType.includes('application/json')) {
+                            const err = await response.json();
+                            errorMsg = err.error || err.detail || errorMsg;
+                        } else {
+                            errorMsg = await response.text() || errorMsg;
+                        }
+                    } catch (e) {
+                        errorMsg = `Server error (${response.status})`;
+                    }
+                    throw new Error(errorMsg);
                 }
                 
+                // Check if response is a file (success) or JSON (error)
+                if (contentType.includes('application/json')) {
+                    const data = await response.json();
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                }
+                
+                // Success - download the file
                 const blob = await response.blob();
+                if (blob.size === 0) {
+                    throw new Error('Received empty file from server');
+                }
+                
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = selectedFile.name.replace('.pptx', `_${languageSelect.value}.pptx`);
+                a.download = selectedFile.name.replace('.pptx', '_' + languageSelect.value + '.pptx');
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
@@ -418,7 +517,7 @@ def get_html_page():
             } catch (err) {
                 progress.classList.remove('active');
                 translateBtn.disabled = false;
-                showError(err.message);
+                showError(err.message || 'An unexpected error occurred');
             }
         });
     </script>
@@ -428,4 +527,6 @@ def get_html_page():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+    port = int(os.environ.get("PORT", 8000))
+    print(f"Starting PPTX Translator on port {port}")
+    uvicorn.run(app, host="0.0.0.0", port=port)
