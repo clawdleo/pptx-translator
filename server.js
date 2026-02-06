@@ -26,19 +26,36 @@ const LANG_CODES = {
   'english': 'en'
 };
 
+// Delay helper
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
 // Free translation using Google Translate (unofficial API)
 async function translateText(text, targetLang) {
   if (!text || text.trim().length === 0) return text;
+  // Skip if just numbers, whitespace, or single chars
+  if (/^[\d\s\.\,\-\+\%\€\$\£]+$/.test(text)) return text;
+  if (text.trim().length < 2) return text;
   
   const langCode = LANG_CODES[targetLang] || targetLang;
   
   try {
+    // Add small delay to avoid rate limiting
+    await delay(100);
+    
     const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${langCode}&dt=t&q=${encodeURIComponent(text)}`;
     const response = await fetch(url);
-    const data = await response.json();
+    const responseText = await response.text();
+    
+    // Check if response is valid JSON
+    if (responseText.startsWith('<!') || responseText.startsWith('<html')) {
+      console.error('Got HTML response, rate limited. Returning original.');
+      return text;
+    }
+    
+    const data = JSON.parse(responseText);
     
     if (data && data[0]) {
-      return data[0].map(item => item[0]).join('');
+      return data[0].map(item => item[0]).filter(Boolean).join('');
     }
     return text;
   } catch (error) {
@@ -173,19 +190,25 @@ async function translateDocxObject(obj, targetLang, stats) {
         // w:t can be string or object with _ property
         if (typeof text === 'object' && text._) {
           if (text._.trim().length > 0) {
-            text._ = await translateText(text._, targetLang);
+            const translated = await translateText(text._, targetLang);
+            obj['w:t'][i]._ = translated;
             stats.translated++;
+            console.log(`Translated: "${text._}" → "${translated}"`);
           }
         } else if (typeof text === 'string' && text.trim().length > 0) {
-          obj['w:t'][i] = await translateText(text, targetLang);
+          const translated = await translateText(text, targetLang);
+          obj['w:t'][i] = translated;
           stats.translated++;
+          console.log(`Translated: "${text}" → "${translated}"`);
         }
       }
     }
     
     // Recurse into all properties
     for (const key of Object.keys(obj)) {
-      obj[key] = await translateDocxObject(obj[key], targetLang, stats);
+      if (key !== 'w:t') { // Don't re-process w:t
+        obj[key] = await translateDocxObject(obj[key], targetLang, stats);
+      }
     }
   }
   
