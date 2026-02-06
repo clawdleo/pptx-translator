@@ -29,33 +29,42 @@ const LANG_CODES = {
 // Delay helper
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-// Free translation using Google Translate (unofficial API)
+// Translation cache to avoid repeated API calls
+const translationCache = new Map();
+
+// Free translation using Lingva Translate API
 async function translateText(text, targetLang) {
   if (!text || text.trim().length === 0) return text;
   // Skip if just numbers, whitespace, or single chars
-  if (/^[\d\s\.\,\-\+\%\€\$\£]+$/.test(text)) return text;
+  if (/^[\d\s\.\,\-\+\%\€\$\£\:\;\!\?\(\)\[\]\/\\]+$/.test(text)) return text;
   if (text.trim().length < 2) return text;
   
   const langCode = LANG_CODES[targetLang] || targetLang;
+  const cacheKey = `${langCode}:${text}`;
+  
+  // Check cache first
+  if (translationCache.has(cacheKey)) {
+    return translationCache.get(cacheKey);
+  }
   
   try {
     // Add small delay to avoid rate limiting
-    await delay(100);
+    await delay(50);
     
-    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${langCode}&dt=t&q=${encodeURIComponent(text)}`;
+    // Use Lingva Translate API (free, reliable)
+    const url = `https://lingva.ml/api/v1/en/${langCode}/${encodeURIComponent(text)}`;
     const response = await fetch(url);
-    const responseText = await response.text();
     
-    // Check if response is valid JSON
-    if (responseText.startsWith('<!') || responseText.startsWith('<html')) {
-      console.error('Got HTML response, rate limited. Returning original.');
+    if (!response.ok) {
+      console.error(`Translation failed: ${response.status}`);
       return text;
     }
     
-    const data = JSON.parse(responseText);
+    const data = await response.json();
     
-    if (data && data[0]) {
-      return data[0].map(item => item[0]).filter(Boolean).join('');
+    if (data && data.translation) {
+      translationCache.set(cacheKey, data.translation);
+      return data.translation;
     }
     return text;
   } catch (error) {
