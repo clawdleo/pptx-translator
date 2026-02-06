@@ -86,6 +86,65 @@ async def health_check():
     return {"status": "healthy", "service": "pptx-translator", "version": "2.1.0"}
 
 
+@app.get("/api/test")
+async def self_test():
+    """
+    Self-test endpoint to verify all components work.
+    Tests: file creation, translation, processing pipeline.
+    """
+    import io
+    from pptx import Presentation as Pres
+    from pptx.util import Inches
+    
+    results = {"steps": []}
+    
+    try:
+        # Step 1: Create test PPTX in memory
+        results["steps"].append("Creating test PPTX...")
+        prs = Pres()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        txBox = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(8), Inches(1))
+        tf = txBox.text_frame
+        tf.paragraphs[0].text = "Hello world, this is a test."
+        
+        # Save to bytes
+        pptx_bytes = io.BytesIO()
+        prs.save(pptx_bytes)
+        pptx_bytes.seek(0)
+        results["steps"].append(f"Created PPTX: {len(pptx_bytes.getvalue())} bytes")
+        
+        # Step 2: Test translator
+        results["steps"].append("Testing DeepL API...")
+        translator = Translator(target_lang="slovenian", deepl_api_key=DEEPL_API_KEY)
+        translated = translator.translate("Hello world")
+        results["steps"].append(f"Translation: 'Hello world' -> '{translated}'")
+        
+        # Step 3: Test processor
+        results["steps"].append("Testing PPTX processor...")
+        input_path = TEMP_DIR / "selftest_input.pptx"
+        output_path = TEMP_DIR / "selftest_output.pptx"
+        
+        with open(input_path, "wb") as f:
+            f.write(pptx_bytes.getvalue())
+        
+        processor = PPTXProcessor(translator)
+        stats = processor.process_file(str(input_path), str(output_path))
+        results["steps"].append(f"Processing complete: {stats}")
+        
+        # Cleanup
+        input_path.unlink(missing_ok=True)
+        output_path.unlink(missing_ok=True)
+        
+        results["status"] = "all_tests_passed"
+        return results
+        
+    except Exception as e:
+        results["status"] = "failed"
+        results["error"] = str(e)
+        results["traceback"] = traceback.format_exc()
+        return JSONResponse(status_code=500, content=results)
+
+
 @app.post("/api/translate")
 async def translate_pptx(
     file: UploadFile = File(...),
