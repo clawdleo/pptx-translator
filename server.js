@@ -117,6 +117,81 @@ async function processPptx(inputPath, targetLang) {
   return { outputPath, stats };
 }
 
+// Process DOCX file
+async function processDocx(inputPath, targetLang) {
+  const zip = new AdmZip(inputPath);
+  const entries = zip.getEntries();
+  const stats = { total: 0, translated: 0, files: 0 };
+  
+  const parser = new xml2js.Parser({ preserveChildrenOrder: true, explicitChildren: true });
+  const builder = new xml2js.Builder({ headless: true, renderOpts: { pretty: false } });
+  
+  for (const entry of entries) {
+    // Process Word document XMLs
+    if (entry.entryName.match(/word\/(document|header[0-9]*|footer[0-9]*|comments|footnotes|endnotes)\.xml$/)) {
+      stats.files++;
+      
+      try {
+        const xmlContent = entry.getData().toString('utf8');
+        const parsed = await parser.parseStringPromise(xmlContent);
+        
+        // Translate all text in the parsed XML (Word uses w:t for text)
+        await translateDocxObject(parsed, targetLang, stats);
+        
+        // Rebuild XML
+        const newXml = builder.buildObject(parsed);
+        zip.updateFile(entry.entryName, Buffer.from(newXml, 'utf8'));
+        
+      } catch (err) {
+        console.error(`Error processing ${entry.entryName}:`, err.message);
+      }
+    }
+  }
+  
+  const outputPath = inputPath.replace('.docx', `_${targetLang}.docx`);
+  zip.writeZip(outputPath);
+  
+  return { outputPath, stats };
+}
+
+// Recursively find and translate all text in DOCX XML object
+async function translateDocxObject(obj, targetLang, stats) {
+  if (!obj) return obj;
+  
+  if (Array.isArray(obj)) {
+    for (let i = 0; i < obj.length; i++) {
+      obj[i] = await translateDocxObject(obj[i], targetLang, stats);
+    }
+    return obj;
+  }
+  
+  if (typeof obj === 'object') {
+    // Handle Word text elements <w:t>
+    if (obj['w:t']) {
+      for (let i = 0; i < obj['w:t'].length; i++) {
+        let text = obj['w:t'][i];
+        // w:t can be string or object with _ property
+        if (typeof text === 'object' && text._) {
+          if (text._.trim().length > 0) {
+            text._ = await translateText(text._, targetLang);
+            stats.translated++;
+          }
+        } else if (typeof text === 'string' && text.trim().length > 0) {
+          obj['w:t'][i] = await translateText(text, targetLang);
+          stats.translated++;
+        }
+      }
+    }
+    
+    // Recurse into all properties
+    for (const key of Object.keys(obj)) {
+      obj[key] = await translateDocxObject(obj[key], targetLang, stats);
+    }
+  }
+  
+  return obj;
+}
+
 // API endpoint for translation
 app.post('/api/translate', upload.single('file'), async (req, res) => {
   try {
@@ -125,24 +200,40 @@ app.post('/api/translate', upload.single('file'), async (req, res) => {
     }
     
     const targetLang = req.body.language || 'slovenian';
+    const originalName = req.file.originalname.toLowerCase();
+    const isPptx = originalName.endsWith('.pptx');
+    const isDocx = originalName.endsWith('.docx');
+    
+    if (!isPptx && !isDocx) {
+      return res.status(400).json({ error: 'Only .pptx and .docx files are supported' });
+    }
+    
     console.log(`Processing: ${req.file.originalname} → ${targetLang}`);
     
-    // Rename to .pptx for processing
-    const inputPath = req.file.path + '.pptx';
+    // Rename for processing
+    const ext = isPptx ? '.pptx' : '.docx';
+    const inputPath = req.file.path + ext;
     fs.renameSync(req.file.path, inputPath);
     
-    const result = await processPptx(inputPath, targetLang);
+    // Process based on file type
+    const result = isPptx 
+      ? await processPptx(inputPath, targetLang)
+      : await processDocx(inputPath, targetLang);
     
     // Read the translated file
     const translatedFile = fs.readFileSync(result.outputPath);
-    const outputName = req.file.originalname.replace('.pptx', `_${targetLang}.pptx`);
+    const outputName = req.file.originalname.replace(ext, `_${targetLang}${ext}`);
     
     // Cleanup
     fs.unlinkSync(inputPath);
     fs.unlinkSync(result.outputPath);
     
+    const contentType = isPptx 
+      ? 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+      : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    
     res.setHeader('Content-Disposition', `attachment; filename="${outputName}"`);
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+    res.setHeader('Content-Type', contentType);
     res.send(translatedFile);
     
     console.log(`Done: ${result.stats.translated} texts translated in ${result.stats.files} files`);

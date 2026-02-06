@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PPTX Translator</title>
+  <title>Document Translator</title>
   <style>
     * {
       margin: 0;
@@ -210,16 +210,16 @@
 <body>
   <div class="container">
     <div class="logo">
-      <h1>📊 PPTX Translator</h1>
-      <p>Translate PowerPoint presentations instantly</p>
+      <h1>📊 Document Translator</h1>
+      <p>Translate PowerPoint & Word documents instantly</p>
     </div>
     
     <div class="upload-area" id="upload-area">
       <div class="upload-icon">📁</div>
-      <div class="upload-text">Drop your .pptx file here or click to browse</div>
+      <div class="upload-text">Drop your .pptx or .docx file here or click to browse</div>
       <div class="file-name" id="file-name"></div>
     </div>
-    <input type="file" id="file-input" accept=".pptx">
+    <input type="file" id="file-input" accept=".pptx,.docx">
     
     <div class="language-select">
       <label for="language">Translate to:</label>
@@ -230,7 +230,7 @@
       </select>
     </div>
     
-    <button class="translate-btn" id="translate-btn" disabled>Translate Presentation</button>
+    <button class="translate-btn" id="translate-btn" disabled>Translate Document</button>
     
     <div class="progress" id="progress">
       <div class="spinner"></div>
@@ -242,9 +242,10 @@
     <div class="features">
       <h3>Features:</h3>
       <ul>
+        <li>Supports PowerPoint (.pptx) and Word (.docx)</li>
         <li>Handles grouped objects correctly</li>
         <li>Preserves all formatting and layouts</li>
-        <li>Translates slides, masters, and layouts</li>
+        <li>Translates headers, footers, and comments</li>
         <li>Auto-download when complete</li>
       </ul>
     </div>
@@ -278,10 +279,10 @@
       e.preventDefault();
       uploadArea.classList.remove('dragover');
       const file = e.dataTransfer.files[0];
-      if (file && file.name.endsWith('.pptx')) {
+      if (file && (file.name.endsWith('.pptx') || file.name.endsWith('.docx'))) {
         handleFile(file);
       } else {
-        showError('Please upload a .pptx file');
+        showError('Please upload a .pptx or .docx file');
       }
     });
     
@@ -333,7 +334,8 @@
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = selectedFile.name.replace('.pptx', `_${languageSelect.value}.pptx`);
+        const ext = selectedFile.name.endsWith('.pptx') ? '.pptx' : '.docx';
+        a.download = selectedFile.name.replace(ext, `_${languageSelect.value}${ext}`);
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
