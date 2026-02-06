@@ -49,14 +49,9 @@ class Translator:
         self._init_translator()
     
     def _init_translator(self):
-        """Initialize the googletrans translator."""
-        try:
-            from googletrans import Translator as GoogleTranslator
-            self._translator = GoogleTranslator()
-            logger.info(f"Initialized googletrans for target language: {self.target_lang}")
-        except Exception as e:
-            logger.error(f"Failed to initialize googletrans: {e}")
-            raise
+        """Initialize the translator."""
+        self._translator = None
+        logger.info(f"Initialized translator for target language: {self.target_lang}")
     
     def translate(self, text: str, max_retries: int = 3) -> str:
         """
@@ -85,39 +80,15 @@ class Translator:
         if cache_key in self._cache:
             return self._cache[cache_key]
         
-        # Try DeepL first if API key is provided
-        if self.deepl_api_key:
-            result = self._translate_deepl(text, max_retries)
-            if result:
-                self._cache[cache_key] = result
-                return result
-        
-        # Fall back to googletrans
-        result = self._translate_google(text, max_retries)
+        # Use DeepL API
+        result = self._translate_deepl(text, max_retries)
         if result:
             self._cache[cache_key] = result
             return result
         
-        # Return original on complete failure
+        # Return original on failure
         logger.warning(f"Translation failed for: {text[:50]}...")
         return text
-    
-    def _translate_google(self, text: str, max_retries: int) -> Optional[str]:
-        """
-        Translate using googletrans with exponential backoff.
-        """
-        for attempt in range(max_retries):
-            try:
-                result = self._translator.translate(text, dest=self.target_lang)
-                if result and result.text:
-                    return result.text
-            except Exception as e:
-                logger.warning(f"googletrans attempt {attempt + 1} failed: {e}")
-                if attempt < max_retries - 1:
-                    # Exponential backoff: 1s, 2s, 4s
-                    sleep_time = 2 ** attempt
-                    time.sleep(sleep_time)
-        return None
     
     def _translate_deepl(self, text: str, max_retries: int) -> Optional[str]:
         """
