@@ -18,13 +18,16 @@ const upload = multer({
 app.use(express.static('public'));
 app.use(express.json());
 
-// Language codes for Google Translate
+// Language codes for DeepL
 const LANG_CODES = {
-  'slovenian': 'sl',
-  'croatian': 'hr', 
-  'serbian': 'sr',
-  'english': 'en'
+  'slovenian': 'SL',
+  'croatian': 'HR', 
+  'serbian': 'SR',
+  'english': 'EN'
 };
+
+// DeepL API key
+const DEEPL_API_KEY = process.env.DEEPL_API_KEY || 'e87352a7-9518-4019-bb38-73f09eb2581b:fx';
 
 // Delay helper
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -32,14 +35,14 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 // Translation cache to avoid repeated API calls
 const translationCache = new Map();
 
-// Free translation using Lingva Translate API
+// DeepL API translation
 async function translateText(text, targetLang) {
   if (!text || text.trim().length === 0) return text;
   // Skip if just numbers, whitespace, or single chars
   if (/^[\d\s\.\,\-\+\%\€\$\£\:\;\!\?\(\)\[\]\/\\]+$/.test(text)) return text;
   if (text.trim().length < 2) return text;
   
-  const langCode = LANG_CODES[targetLang] || targetLang;
+  const langCode = LANG_CODES[targetLang] || targetLang.toUpperCase();
   const cacheKey = `${langCode}:${text}`;
   
   // Check cache first
@@ -48,23 +51,30 @@ async function translateText(text, targetLang) {
   }
   
   try {
-    // Add small delay to avoid rate limiting
-    await delay(50);
-    
-    // Use Lingva Translate API (free, reliable)
-    const url = `https://lingva.ml/api/v1/en/${langCode}/${encodeURIComponent(text)}`;
-    const response = await fetch(url);
+    const response = await fetch('https://api-free.deepl.com/v2/translate', {
+      method: 'POST',
+      headers: {
+        'Authorization': `DeepL-Auth-Key ${DEEPL_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        text: [text],
+        target_lang: langCode
+      })
+    });
     
     if (!response.ok) {
-      console.error(`Translation failed: ${response.status}`);
+      const errText = await response.text();
+      console.error(`DeepL error ${response.status}: ${errText}`);
       return text;
     }
     
     const data = await response.json();
     
-    if (data && data.translation) {
-      translationCache.set(cacheKey, data.translation);
-      return data.translation;
+    if (data && data.translations && data.translations[0]) {
+      const translated = data.translations[0].text;
+      translationCache.set(cacheKey, translated);
+      return translated;
     }
     return text;
   } catch (error) {
